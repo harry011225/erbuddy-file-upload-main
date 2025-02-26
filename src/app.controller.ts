@@ -4,34 +4,35 @@ import {
   Param,
   Post,
   Res,
-  Req
+  StreamableFile,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
-import { AppService } from './app.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
+import { AppService } from './app.service';
 
 @Controller()
 export class AppController {
   constructor(private readonly appService: AppService) {}
 
   @Get('getKey')
-  async getKey(){
+  async getKey() {
     return this.appService.getKey();
   }
 
-  @Post('upload/:userID')
-  async uploadFile(@Param('userID') userID: string, @Req() req: Request) {
-    return this.appService.uploadFile(userID, req);
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadFile(@UploadedFile() file: Express.Multer.File) {
+    return this.appService.uploadFile(file);
   }
 
-
   @Get('download/:userID/:filename')
-    async downloadFile(
-        @Param('userID') userID: string,
-        @Param('filename') filename: string,
-        @Res() response: Response
-    ) {
-        return this.appService.downloadFile(userID, filename, response);
-    }
-
+  async downloadFile(
+    @Param('userID') userID: string,
+    @Param('filename') filename: string,
+    @Res() response: Response,
+  ): Promise<StreamableFile> {
+    return this.appService.downloadFile(userID, filename, response);
+  }
 }

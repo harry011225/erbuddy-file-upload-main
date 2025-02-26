@@ -1,15 +1,10 @@
 import { Injectable, NotFoundException, StreamableFile } from '@nestjs/common';
 import { join } from 'path';
-import { createReadStream, createWriteStream } from 'fs';
-import { promises as fsPromises } from 'fs';
+import { createWriteStream } from 'fs';
+import { promises as fs } from 'fs';
 import { Response } from 'express';
 import * as crypto from 'crypto';
 import { generateAES256Key } from './generate_dek';
-import * as path from 'path';
-import * as Busboy from 'busboy'; 
-import * as fs from 'fs'; 
-
-
 
 @Injectable()
 export class AppService {
@@ -26,7 +21,7 @@ export class AppService {
       throw new Error(`Invalid key length: ${this.masterKey.length} bytes`);
     }
 
-    fsPromises.mkdir(this.uploadDir, { recursive: true });
+    fs.mkdir(this.uploadDir, { recursive: true });
   }
 
   getKey(): string {
@@ -34,60 +29,81 @@ export class AppService {
     return key.toString('hex');
   }
 
-  async uploadFile(userID: string, req: Request): Promise<any> {
+  async uploadFile(file: Express.Multer.File) {
+    // Randomly generate a userId (8-character hex string)
+    const userId = crypto.randomBytes(4).toString('hex');
+    // Create a directory for the user
+    const userDir = join(this.uploadDir, userId);
+    await fs.mkdir(userDir, { recursive: true });
+
+    // Generate a random fileKey (16-character hex string)
+    const fileKey = crypto.randomBytes(8).toString('hex');
+    // Construct the final filename
+    const filename = `${fileKey}_${file.originalname}`;
+    const filePath = join(userDir, filename);
+
+    // Generate IV and write it at the beginning of the file
+    const iv = crypto.randomBytes(this.ivLength);
+
     return new Promise((resolve, reject) => {
-        const busboy = new Busboy({ headers: req.headers });
-        const userDir = join(this.uploadDir, `user_${userID}`);
+      try {
+        const cipher = crypto.createCipheriv(this.algorithm, this.masterKey, iv);
+        const writeStream = createWriteStream(filePath);
 
-        if (!fs.existsSync(userDir)) {
-            fs.mkdirSync(userDir, { recursive: true });
-        }
+        writeStream.write(iv);
 
-        busboy.on('file', (fieldname, file, info) => {
-            const filename = `${Date.now()}_${info.filename}.enc`;
-            const filePath = join(userDir, filename);
-            const iv = crypto.randomBytes(16); // 生成唯一 IV
+        const encrypted = Buffer.concat([
+          cipher.update(file.buffer),
+          cipher.final(),
+        ]);
 
-            const writeStream = fs.createWriteStream(filePath);
-            writeStream.write(iv); // 将 IV 写入文件开头
+        writeStream.write(encrypted);
+        writeStream.end();
 
-            const cipher = crypto.createCipheriv('aes-256-cbc', this.masterKey, iv);
-
-            file.pipe(cipher).pipe(writeStream);
-
-            writeStream.on('finish', () => {
-                resolve({
-                    message: 'File uploaded and encrypted successfully',
-                    encryptedFilename: filename,
-                });
-            });
-
-            writeStream.on('error', reject);
+        writeStream.on('finish', () => {
+          resolve({ 
+            message: 'File uploaded and encrypted successfully',
+            userId,
+            filename,
+          });
         });
 
-        (req as unknown as NodeJS.ReadableStream).pipe(busboy);
+        writeStream.on('error', reject);
+      } catch (error) {
+        reject(error);
+      }
     });
-}
-
-
-async downloadFile(userID: string, filename: string, response: Response) {
-  const filePath = join(this.uploadDir, `user_${userID}`, filename);
-
-  try {
-      const fileStream = fs.createReadStream(filePath);
-      fileStream.once('readable', () => {
-          const iv = fileStream.read(16); // 读取 IV
-          const decipher = crypto.createDecipheriv('aes-256-cbc', this.masterKey, iv);
-
-          response.set({
-              'Content-Disposition': `attachment; filename="${filename.replace('.enc', '')}"`,
-              'Content-Type': 'application/octet-stream',
-          });
-
-          fileStream.pipe(decipher).pipe(response);
-      });
-  } catch (error) {
-      throw new NotFoundException('File not found');
   }
-}
+
+  async downloadFile(
+    userId: string,
+    filename: string,
+    response: Response & { set: any },
+  ): Promise<StreamableFile> {
+    const filePath = join(this.uploadDir, userId, filename);
+
+    try {
+      await fs.access(filePath);
+      const fileBuffer = await fs.readFile(filePath);
+
+      // Extract the IV and the encrypted data
+      const iv = fileBuffer.slice(0, this.ivLength);
+      const encryptedData = fileBuffer.slice(this.ivLength);
+
+      const decipher = crypto.createDecipheriv(this.algorithm, this.masterKey, iv);
+      const decrypted = Buffer.concat([
+        decipher.update(encryptedData),
+        decipher.final(),
+      ]);
+
+      response.set({
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+      });
+
+      return new StreamableFile(decrypted);
+    } catch (error) {
+      throw new NotFoundException('File not found');
+    }
+  }
 }
