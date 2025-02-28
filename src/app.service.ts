@@ -1,10 +1,12 @@
-import { Injectable, NotFoundException, StreamableFile } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { join } from 'path';
 import { createWriteStream } from 'fs';
-import { promises as fs } from 'fs';
 import { Response } from 'express';
 import * as crypto from 'crypto';
 import { generateAES256Key } from './generate_dek';
+import * as fs from 'fs'; 
+import { promises as fsPromises } from 'fs';
+
 
 @Injectable()
 export class AppService {
@@ -14,14 +16,14 @@ export class AppService {
   private readonly masterKey: Buffer;
 
   constructor() {
-    const keyFromEnv = process.env.MASTER_KEY || '';
-    this.masterKey = Buffer.from(keyFromEnv, 'hex');
+    const keyFromEnv = process.env.MASTER_KEY || '';//read env vairable
+    this.masterKey = Buffer.from(keyFromEnv, 'hex');//transfer to buffer
 
     if (this.masterKey.length !== 32) {
       throw new Error(`Invalid key length: ${this.masterKey.length} bytes`);
     }
 
-    fs.mkdir(this.uploadDir, { recursive: true });
+    fsPromises.mkdir(this.uploadDir, { recursive: true });
   }
 
   getKey(): string {
@@ -34,7 +36,7 @@ export class AppService {
     const userId = crypto.randomBytes(4).toString('hex');
     // Create a directory for the user
     const userDir = join(this.uploadDir, userId);
-    await fs.mkdir(userDir, { recursive: true });
+    await fsPromises.mkdir(userDir, { recursive: true });
 
     // Generate a random fileKey (16-character hex string)
     const fileKey = crypto.randomBytes(8).toString('hex');
@@ -78,32 +80,46 @@ export class AppService {
   async downloadFile(
     userId: string,
     filename: string,
-    response: Response & { set: any },
-  ): Promise<StreamableFile> {
+    response: Response,
+  ): Promise<void> {
     const filePath = join(this.uploadDir, userId, filename);
-
+    
     try {
-      await fs.access(filePath);
-      const fileBuffer = await fs.readFile(filePath);
+      // Read the file as a stream
+      const fileStream = fs.createReadStream(filePath);
+  
+      fileStream.once('readable', () => {
+        try {
+          // Read the first 16 bytes as IV
+          const iv = fileStream.read(16);
+          if (!iv || iv.length !== 16) throw new Error('Invalid IV');
+  
+          // Create AES-256-CBC decryption stream
+          const decipher = crypto.createDecipheriv(this.algorithm, this.masterKey, iv);
+  
+          // Set response headers
+          response.setHeader('Content-Type', 'application/octet-stream');
+          response.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/^.*_/, '')}"`);
 
-      // Extract the IV and the encrypted data
-      const iv = fileBuffer.slice(0, this.ivLength);
-      const encryptedData = fileBuffer.slice(this.ivLength);
+          //  Listen for decryption errors
+          decipher.on('error', () => {
+            if (!response.headersSent) response.status(500).send('Decryption failed');
+          });
+  
+          // Handle file stream errors
+          fileStream.on('error', () => {
+            if (!response.headersSent) response.status(500).send('Error reading file');
+          });
 
-      const decipher = crypto.createDecipheriv(this.algorithm, this.masterKey, iv);
-      const decrypted = Buffer.concat([
-        decipher.update(encryptedData),
-        decipher.final(),
-      ]);
-
-      response.set({
-        'Content-Type': 'application/octet-stream',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-      });
-
-      return new StreamableFile(decrypted);
+          // Stream decryption and send response
+          fileStream.pipe(decipher).pipe(response);
+          } catch (error) {
+            response.status(500).send('Decryption initialization failed');
+          }
+        });
+          
     } catch (error) {
-      throw new NotFoundException('File not found');
+      response.status(404).send('File not found');
     }
-  }
+  }  
 }

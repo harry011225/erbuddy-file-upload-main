@@ -32,7 +32,8 @@ export class AppController {
     @Param('userID') userID: string,
     @Param('filename') filename: string,
     @Res() response: Response,
-  ): Promise<StreamableFile> {
-    return this.appService.downloadFile(userID, filename, response);
+  ): Promise<void> {
+    console.log(`Controller: Starting file download`);
+    await this.appService.downloadFile(userID, filename, response);
   }
 }
