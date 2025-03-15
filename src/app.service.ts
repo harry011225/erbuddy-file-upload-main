@@ -31,9 +31,8 @@ export class AppService {
     return key.toString('hex');
   }
 
-  async uploadFile(file: Express.Multer.File) {
-    // Randomly generate a userId (8-character hex string)
-    const userId = crypto.randomBytes(4).toString('hex');
+  async uploadFile(file: Express.Multer.File, userId: string) {
+    
     // Create a directory for the user
     const userDir = join(this.uploadDir, userId);
     await fsPromises.mkdir(userDir, { recursive: true });

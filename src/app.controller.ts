@@ -21,10 +21,13 @@ export class AppController {
     return this.appService.getKey();
   }
 
-  @Post('upload')
+  @Post('upload/:userId')
   @UseInterceptors(FileInterceptor('file'))
-  async uploadFile(@UploadedFile() file: Express.Multer.File) {
-    return this.appService.uploadFile(file);
+  async uploadFile(
+    @Param('userId') userId: string,
+    @UploadedFile() file: Express.Multer.File
+  ) {
+    return this.appService.uploadFile(file, userId);
   }
 
   @Get('download/:userID/:filename')
